@@ -35,7 +35,7 @@ npm start
 <!-- 文库使用 data-site="niko-wenku" -->
 ```
 
-记录首次访问、前端路由变化与链接/按钮点击。`data-monitor-label` 可指定点击标签，`data-monitor-ignore` 可排除区域；表单区域不采集点击。不采集输入值、正文或 URL 查询参数，会话 ID 每日 HMAC 匿名化，不持久化原始 IP 或会话 ID。尊重 Do Not Track，采集失败不影响导航。
+记录首次访问、前端路由变化与链接/按钮点击。`data-monitor-label` 可指定点击标签，`data-monitor-ignore` 可排除区域；表单与主站 AI 对话区域不采集点击。不采集输入值、正文或 URL 查询参数，会话 ID 每日 HMAC 匿名化，不持久化原始 IP 或会话 ID。尊重 Do Not Track，采集失败不影响导航。
 
 主站与文库源码已配置生产环境加载，本机及 `file:` 预览不向线上发送数据。部署顺序是监控服务、Nginx 代理、带采集入口的网站。新增域名时更新 `sites[].origins`，不使用通配 Origin。
 
