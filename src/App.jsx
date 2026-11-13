@@ -35,7 +35,8 @@ const dateTime = (time) =>
       }).format(time)
     : "等待首次探测";
 function Login({ onSuccess }) {
-  const [token, setToken] = useState(""),
+  const [username, setUsername] = useState(""),
+    [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function submit(event) {
@@ -45,9 +46,9 @@ function Login({ onSuccess }) {
     try {
       await request("login", {
         method: "POST",
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ username, password }),
       });
-      setToken("");
+      setPassword("");
       onSuccess();
     } catch (reason) {
       setError(reason.message);
@@ -62,15 +63,28 @@ function Login({ onSuccess }) {
           <Activity />
         </span>
         <h1>Niko Monitor</h1>
-        <p>输入访问密钥，进入监控中心。</p>
-        <label htmlFor="token">访问密钥</label>
+        <p>使用 Niko 管理员账号登录监控中心。</p>
+        <label htmlFor="username">管理员账号</label>
         <input
-          id="token"
+          id="username"
+          name="username"
+          type="text"
+          autoComplete="username"
+          required
+          maxLength={64}
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+        />
+        <label htmlFor="password">管理员密码</label>
+        <input
+          id="password"
+          name="password"
           type="password"
           autoComplete="current-password"
           required
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
+          maxLength={1024}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
         />
         {error && (
           <p role="alert" className="error-text">

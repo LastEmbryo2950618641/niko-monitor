@@ -6,16 +6,10 @@ import { createMonitor } from "./app.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const host = process.env.MONITOR_HOST || "127.0.0.1";
 const port = Number(process.env.MONITOR_PORT || 4182);
-const token = process.env.MONITOR_TOKEN || "";
 let publicOrigin = process.env.MONITOR_PUBLIC_ORIGIN || "";
 const development = process.argv.includes("--dev");
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error("MONITOR_PORT 必须为 1–65535");
-if (
-  (!["127.0.0.1", "localhost", "::1"].includes(host) || publicOrigin) &&
-  token.length < 24
-)
-  throw new Error("公开部署必须配置至少 24 字符的 MONITOR_TOKEN");
 if (!["127.0.0.1", "localhost", "::1"].includes(host) && !publicOrigin)
   throw new Error("公开监听必须设置 MONITOR_PUBLIC_ORIGIN");
 if (publicOrigin) {
@@ -75,7 +69,6 @@ const monitor = createMonitor({
     process.env.MONITOR_STATE_DIR || resolve(root, ".state"),
     "monitor.sqlite",
   ),
-  token,
   publicOrigin,
   intervalMs,
   development,

@@ -13,23 +13,23 @@ service_user="${4:-ubuntu}"
 [[ "$service_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
 id "$service_user" >/dev/null
 node -e 'const [major,minor]=process.versions.node.split(".").map(Number); if(major<22||(major===22&&minor<13)) process.exit(1)'
-for file in server/index.mjs server/app.mjs server/store.mjs server/health.mjs public/tracker.js dist/index.html monitor.config.production.json deploy/niko-monitor.service deploy/nginx-monitor.conf; do
+for file in server/index.mjs server/app.mjs server/admin-account.mjs server/store.mjs server/health.mjs public/tracker.js dist/index.html monitor.config.production.json deploy/niko-monitor.service deploy/nginx-monitor.conf; do
   test -f "$source_dir/$file"
 done
 test -f "$site"
 site="$(readlink -f -- "$site")"
 export NIKO_MONITOR_TARGET="$target" NIKO_MONITOR_ORIGIN="$origin" NIKO_MONITOR_USER="$service_user" NIKO_MONITOR_SITE="$site" NIKO_MONITOR_SOURCE="$source_dir"
 
-# The token is generated on the server and never printed or included in a package.
+# The fixed administrator is verified by the server; environment files contain no login password.
 node --input-type=module <<'NODE'
 import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 const origin = new URL(process.env.NIKO_MONITOR_ORIGIN);
 if (origin.protocol !== 'https:' || origin.origin !== process.env.NIKO_MONITOR_ORIGIN) throw Error('Use a canonical HTTPS origin');
 const file = '/etc/niko-monitor.env';
-if (!existsSync(file)) writeFileSync(file, `MONITOR_PUBLIC_ORIGIN=${origin.origin}\nMONITOR_TOKEN=${randomBytes(32).toString('hex')}\n`, { flag: 'wx', mode: 0o600 });
+if (!existsSync(file)) writeFileSync(file, `MONITOR_PUBLIC_ORIGIN=${origin.origin}\n`, { flag: 'wx', mode: 0o600 });
 const env = readFileSync(file, 'utf8');
-if (!env.split('\n').includes(`MONITOR_PUBLIC_ORIGIN=${origin.origin}`) || !/^MONITOR_TOKEN=\S{24,}$/m.test(env)) throw Error('Existing monitor environment needs manual review');
+if (!env.split('\n').includes(`MONITOR_PUBLIC_ORIGIN=${origin.origin}`)) throw Error('Existing monitor origin needs manual review');
+writeFileSync(file, env.replace(/^MONITOR_TOKEN=.*(?:\r?\n|$)/gm, ''), { mode: 0o600 });
 chmodSync(file, 0o600);
 NODE
 
@@ -87,4 +87,4 @@ if ! nginx -t || ! systemctl reload nginx; then
   exit 1
 fi
 echo "Niko Monitor deployed: $origin/niko-monitor/"
-echo 'Access token retained in /etc/niko-monitor.env (root-only); no token was printed.'
+echo 'Sign in with the fixed Niko administrator account; legacy access-token login is disabled.'

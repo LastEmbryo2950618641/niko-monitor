@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isIP } from "node:net";
 import { MonitorStore } from "./store.mjs";
 import { checkService } from "./health.mjs";
+import { ADMIN_ACCOUNT, verifyAdmin } from "./admin-account.mjs";
 
 const json = (res, status, body) => {
   res.writeHead(status, {
@@ -14,11 +16,6 @@ const json = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const equal = (a, b) => {
-  const x = Buffer.from(a || ""),
-    y = Buffer.from(b || "");
-  return x.length === y.length && timingSafeEqual(x, y);
-};
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let size = 0,
@@ -48,16 +45,18 @@ export function createMonitor({
   dbFile,
   sites = [],
   services = [],
-  token = "",
+  adminAccount = ADMIN_ACCOUNT,
   publicOrigin = "",
   intervalMs = 15000,
   frontend,
   development = false,
 } = {}) {
+  if (publicOrigin && !adminAccount) throw new Error("公开部署必须启用管理员登录");
   const store = new MonitorStore(dbFile);
   const peers = new Map(),
     sessions = new Map(),
-    rates = new Map();
+    rates = new Map(),
+    loginRates = new Map();
   const shutdown = new AbortController();
   let timer,
     pending,
@@ -85,7 +84,7 @@ export function createMonitor({
     notifyTimer = setTimeout(() => {
       notifyTimer = null;
       for (const [res, peer] of peers) {
-        if (token && !sessions.has(peer.session)) {
+        if (adminAccount && !sessions.has(peer.session)) {
           res.end();
           continue;
         }
@@ -121,7 +120,7 @@ export function createMonitor({
       req.headers.cookie || "",
     )?.[1];
   const authenticated = (req) => {
-    if (!token) return true;
+    if (!adminAccount) return true;
     const key = sessionOf(req),
       expires = sessions.get(key);
     if (!expires || expires < Date.now()) {
@@ -229,8 +228,29 @@ export function createMonitor({
     if (path === "/api/login" && req.method === "POST") {
       sameOrigin(req);
       const body = await readJson(req);
-      if (!token || !equal(body?.token, token))
-        throw fail(401, "访问密钥不正确");
+      if (
+        typeof body?.username !== "string" ||
+        typeof body?.password !== "string" ||
+        !body.username.length || body.username.length > 64 ||
+        !body.password.length || body.password.length > 1024
+      ) throw fail(400, "请填写有效的管理员账号和密码");
+      const remote = req.socket.remoteAddress;
+      const forwarded = req.headers["x-real-ip"];
+      const key = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote) &&
+        typeof forwarded === "string" && isIP(forwarded) ? forwarded : remote;
+      let rate = loginRates.get(key);
+      if (!rate || Date.now() - rate.since >= 15 * 60000) {
+        rate = { since: Date.now(), attempts: 0 };
+        loginRates.set(key, rate);
+      }
+      if (rate.attempts >= 8) {
+        res.setHeader("Retry-After", String(Math.ceil((rate.since + 15 * 60000 - Date.now()) / 1000)));
+        throw fail(429, "登录尝试过多，请稍后再试");
+      }
+      rate.attempts++;
+      if (!adminAccount || !await verifyAdmin(body.username, body.password, adminAccount))
+        throw fail(401, "账号或密码不正确");
+      loginRates.delete(key);
       for (const [key, expires] of sessions)
         if (expires < Date.now()) sessions.delete(key);
       if (sessions.size >= 100) throw fail(429, "会话数量已达上限");
@@ -240,7 +260,7 @@ export function createMonitor({
         "Set-Cookie",
         `niko_monitor=${session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200${ownOrigin(req).startsWith("https:") ? "; Secure" : ""}`,
       );
-      json(res, 200, { ok: true });
+      json(res, 200, { ok: true, username: adminAccount.username, role: "admin" });
       return;
     }
     if (path.startsWith("/api/")) {
@@ -283,7 +303,7 @@ export function createMonitor({
         );
         peers.set(res, { site, session: sessionOf(req) });
         const heartbeat = setInterval(() => {
-          if (token && !authenticated(req)) {
+          if (adminAccount && !authenticated(req)) {
             res.end();
             return;
           }
@@ -346,6 +366,8 @@ export function createMonitor({
     store.prune();
     for (const [key, rate] of rates)
       if (Date.now() - rate.since > 60000) rates.delete(key);
+    for (const [key, rate] of loginRates)
+      if (Date.now() - rate.since >= 15 * 60000) loginRates.delete(key);
   }, 3600000);
   maintenance.unref();
   return {

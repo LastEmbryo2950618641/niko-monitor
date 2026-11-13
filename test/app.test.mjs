@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { scryptSync } from "node:crypto";
 import { createMonitor } from "../server/app.mjs";
 
 const listen = (server) =>
@@ -16,6 +17,7 @@ async function setup(t, options = {}) {
       { id: "niko-main", name: "主站", origins: ["https://niko.example"] },
     ],
     services: [],
+    adminAccount: null,
     ...options,
   });
   const base = await listen(monitor.server);
@@ -79,22 +81,29 @@ test("collection persists real counts and rejects foreign origins, unknown sites
 });
 
 test("private statistics require login, cross-origin login is rejected, and events remain public", async (t) => {
-  const token = "test-monitor-secret-123456789";
-  const { base } = await setup(t, { token });
+  const password = "test-admin-password-only";
+  const adminAccount = { username: "test-admin", salt: "test-salt", passwordHash: scryptSync(password, "test-salt", 64).toString("hex") };
+  const { base } = await setup(t, { adminAccount });
   assert.equal((await fetch(base + "/api/snapshot")).status, 401);
   assert.equal((await fetch(base + "/api/events")).status, 401);
-  const login = (value, origin = base) =>
+  const login = (value, origin = base, username = "test-admin") =>
     fetch(base + "/api/login", {
       method: "POST",
       headers: { Origin: origin, "Content-Type": "application/json" },
-      body: JSON.stringify({ token: value }),
+      body: JSON.stringify({ username, password: value }),
     });
-  assert.equal((await login(token, "https://evil.example")).status, 403);
+  assert.equal((await login(password, "https://evil.example")).status, 403);
   assert.equal((await login("incorrect")).status, 401);
-  const response = await login(token);
+  assert.equal((await login(password, base, "unknown-admin")).status, 401);
+  assert.equal((await login("x".repeat(1025))).status, 400);
+  assert.equal((await fetch(base + "/api/login", { method: "POST", headers: { Origin: base }, body: JSON.stringify({ token: "legacy-token-is-not-a-login" }) })).status, 400);
+  const response = await login(password);
   assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, username: "test-admin", role: "admin" });
   const cookie = response.headers.get("set-cookie").split(";")[0];
   assert.match(response.headers.get("set-cookie"), /HttpOnly/i);
+  assert.match(response.headers.get("set-cookie"), /SameSite=Strict/i);
+  assert.doesNotMatch(response.headers.get("set-cookie"), /test-admin|test-admin-password-only/);
   assert.equal(
     (await fetch(base + "/api/snapshot", { headers: { Cookie: cookie } }))
       .status,
@@ -111,6 +120,23 @@ test("private statistics require login, cross-origin login is rejected, and even
       .status,
     401,
   );
+});
+
+test("fixed admin login is required by default and repeated wrong passwords are limited", async (t) => {
+  const password = "rate-limit-password-only";
+  const adminAccount = { username: "test-admin", salt: "test-salt", passwordHash: scryptSync(password, "test-salt", 64).toString("hex") };
+  const { base } = await setup(t, { adminAccount });
+  for (let i = 0; i < 8; i++) {
+    const response = await fetch(base + "/api/login", { method: "POST", headers: { Origin: base }, body: JSON.stringify({ username: "test-admin", password: "incorrect-password" }) });
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("set-cookie"), null);
+  }
+  assert.equal((await fetch(base + "/api/login", { method: "POST", headers: { Origin: base }, body: JSON.stringify({ username: "test-admin", password }) })).status, 429);
+  const secured = createMonitor({ dbFile: ":memory:" });
+  t.after(() => secured.close());
+  const securedBase = await listen(secured.server);
+  assert.equal((await fetch(securedBase + "/api/snapshot")).status, 401);
+  assert.throws(() => createMonitor({ dbFile: ":memory:", publicOrigin: "https://niko.example", adminAccount: null }), /管理员/);
 });
 
 test("health checks distinguish a JSON API failure from HTTP success, record downtime and recover", async (t) => {

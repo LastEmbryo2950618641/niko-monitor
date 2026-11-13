@@ -22,7 +22,7 @@ npm start
 - 页面访问 PV、匿名会话 UV、卡片/链接/按钮点击、热门页面和点击排行。
 - SQLite 持久化、事件 ID 去重、北京时间每日统计、24 小时趋势、30 天原始样本保留。
 - SSE 实时推送与重连、站点筛选、手动检查、桌面及手机布局。
-- 公开部署使用访问密钥登录与 HttpOnly 会话；公开采集端点校验站点和 Origin 白名单。
+- 使用固定的 Niko 管理员账号、密码登录与 HttpOnly 会话；公开采集端点校验站点和 Origin 白名单。
 
 数据从接入时开始累计，没有数据时显示零和空状态。UV 是匿名浏览会话数，不是经身份识别的独立自然人数；无 JavaScript、拒绝跟踪或拦截 SDK 的访问不计入浏览器统计。成功率按实际探测样本计算，不伪造历史可用率。
 
@@ -50,10 +50,11 @@ npm start
 | `MONITOR_CONFIG` | `monitor.config.json` | 配置文件绝对路径 |
 | `MONITOR_STATE_DIR` | `.state` | 独立数据库目录 |
 | `MONITOR_INTERVAL_MS` | `15000` | 每轮完成后等待的探测间隔，至少 5 秒 |
-| `MONITOR_TOKEN` | 空 | 生产访问密钥，至少 24 字符 |
 | `MONITOR_PUBLIC_ORIGIN` | 空 | 公开 origin，不含路径，如 `https://111.229.32.85` |
 
-采集接口 `POST /niko-monitor/api/collect` 公开但校验来源；快照 `/niko-monitor/api/snapshot` 和 SSE `/niko-monitor/api/events` 在生产环境需要登录。SDK 和健康接口允许公开读取。
+管理员账号固定为 `liuqi`，密码由部署管理员指定，服务端仅保留 `server/admin-account.mjs` 中的 scrypt 摘要。浏览器提交 `username` 与 `password`，登录后使用 12 小时 HttpOnly、SameSite=Strict 会话；HTTPS 下附加 Secure。连续 8 次失败会暂时限制登录。旧 `MONITOR_TOKEN` 登录已移除，部署会删除旧环境变量。本地预览同样需要登录。
+
+采集接口 `POST /niko-monitor/api/collect` 公开但校验来源；快照 `/niko-monitor/api/snapshot` 和 SSE `/niko-monitor/api/events` 需要登录。SDK 和健康接口允许公开读取。管理员密码不在前端、文档、采集事件或浏览器存储中保存。
 
 ## 服务器部署
 
@@ -65,11 +66,11 @@ npm start
 sudo bash deploy/install.sh /srv/niko-archive/niko-monitor https://111.229.32.85 /etc/nginx/sites-enabled/worldseed ubuntu
 ```
 
-安装脚本在服务器生成并保留 root 专属的访问密钥，保留监控数据库与旧版静态资源，只重启监控服务。它检查健康状态后插入独立 Nginx include，验证配置再 reload；代理验证失败时恢复旧配置。重复执行不会更换访问密钥，也不会重启文库主备、扫描、下载或聊天服务。现有站点配置必须包含 `/srv/niko-archive/niko-main` 的 root 指令，否则脚本拒绝猜测插入位置。
+安装脚本保留监控数据库与旧版静态资源，只重启监控服务。它检查健康状态后插入独立 Nginx include，验证配置再 reload；代理验证失败时恢复旧配置。重复执行不会更改固定管理员，也不会重启文库主备、扫描、下载或聊天服务。现有站点配置必须包含 `/srv/niko-archive/niko-main` 的 root 指令，否则脚本拒绝猜测插入位置。
 
 手动安装步骤：
 
-1. 安全创建 `/etc/niko-monitor.env`，配置 `MONITOR_PUBLIC_ORIGIN=https://111.229.32.85` 和强随机 `MONITOR_TOKEN`。文件仅允许 root 读取，不提交 Git；在 HTTPS 页面登录框输入密钥，不将其放入 URL。
+1. 安全创建 `/etc/niko-monitor.env`，配置 `MONITOR_PUBLIC_ORIGIN=https://111.229.32.85`，文件仅允许 root 读取，不提交 Git；在 HTTPS 页面使用固定的管理员账号和密码登录。
 2. 安装 `deploy/niko-monitor.service` 至 `/etc/systemd/system/`，核对用户及 Node 路径，再执行 `sudo systemctl daemon-reload && sudo systemctl enable --now niko-monitor`。
 3. 确认 `curl http://127.0.0.1:4182/api/health` 返回 `{"ok":true,"service":"niko-monitor"}`。
 4. 把 `deploy/nginx-monitor.conf` 包含进现有 `server {}` 块，`sudo nginx -t` 通过后仅 reload Nginx，保留文库主备 upstream 与工作进程。
