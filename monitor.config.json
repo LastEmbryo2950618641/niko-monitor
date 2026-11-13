@@ -1,0 +1,12 @@
+{
+  "sites": [
+    { "id": "niko-main", "name": "主站", "url": "https://111.229.32.85/", "origins": ["http://111.229.32.85", "https://111.229.32.85", "http://127.0.0.1:4182"] },
+    { "id": "niko-wenku", "name": "轻小说文库", "url": "https://111.229.32.85/nikowenku-archive/", "origins": ["http://111.229.32.85", "https://111.229.32.85", "http://127.0.0.1:4178"] }
+  ],
+  "services": [
+    { "id": "homepage", "site": "niko-main", "name": "主站首页", "group": "网站", "url": "http://111.229.32.85/", "kind": "web" },
+    { "id": "library", "site": "niko-wenku", "name": "轻小说文库", "group": "网站", "url": "http://111.229.32.85/nikowenku-archive/", "kind": "web" },
+    { "id": "public-api", "site": "niko-wenku", "name": "文库公共 API", "group": "接口", "url": "http://111.229.32.85/nikowenku-archive/api/health", "kind": "api" },
+    { "id": "npm", "site": "niko-cli", "name": "nikowenku-archive · npm", "group": "分发", "url": "https://registry.npmjs.org/nikowenku-archive/latest", "kind": "npm", "timeoutMs": 10000 }
+  ]
+}
