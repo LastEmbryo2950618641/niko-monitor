@@ -1,29 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Activity,
-  BarChart3,
-  ChevronRight,
-  Clock3,
+  ArrowLeft,
+  ArrowRight,
+  ChartNoAxesCombined,
   Globe2,
-  HeartPulse,
-  LayoutDashboard,
-  LockKeyhole,
-  MousePointer2,
-  PawPrint,
-  Radio,
+  LogOut,
+  Network,
   RefreshCw,
+  Search,
   Server,
-  ShieldCheck,
   Users,
-  X,
 } from "lucide-react";
 import { request, useMonitor } from "./use-monitor";
-import { TrafficChart, Sparkline, formatHour } from "./Charts";
+import { TrafficChart } from "./Charts";
 
 const number = (value) =>
   value == null ? "—" : new Intl.NumberFormat("zh-CN").format(value);
-const dateTime = (time) =>
-  time
+const time = (value) =>
+  value
     ? new Intl.DateTimeFormat("zh-CN", {
         timeZone: "Asia/Shanghai",
         month: "2-digit",
@@ -32,8 +27,25 @@ const dateTime = (time) =>
         minute: "2-digit",
         second: "2-digit",
         hour12: false,
-      }).format(time)
-    : "等待首次探测";
+      }).format(value)
+    : "—";
+const ms = (value) => (value == null ? "—" : `${number(value)} ms`);
+const names = { "niko-main": "主站", "niko-wenku": "文库", "niko-cli": "CLI" };
+function Status({ status }) {
+  return (
+    <span className={`status ${status}`}>
+      <i />
+      {{
+        up: "正常",
+        down: "异常",
+        warning: "需关注",
+        protected: "鉴权正常",
+        pending: "待观测",
+        stale: "无近期请求",
+      }[status] || "待观测"}
+    </span>
+  );
+}
 function Login({ onSuccess }) {
   const [username, setUsername] = useState(""),
     [password, setPassword] = useState(""),
@@ -50,8 +62,8 @@ function Login({ onSuccess }) {
       });
       setPassword("");
       onSuccess();
-    } catch (reason) {
-      setError(reason.message);
+    } catch (error) {
+      setError(error.message);
     } finally {
       setBusy(false);
     }
@@ -59,16 +71,13 @@ function Login({ onSuccess }) {
   return (
     <main className="login-page">
       <form className="login-form" onSubmit={submit}>
-        <span className="brand-icon">
-          <Activity />
-        </span>
+        <Activity size={28} className="accent" />
         <h1>Niko Monitor</h1>
-        <p>使用 Niko 管理员账号登录监控中心。</p>
+        <p className="muted">使用 Niko 管理员账号登录。</p>
         <label htmlFor="username">管理员账号</label>
         <input
           id="username"
           name="username"
-          type="text"
           autoComplete="username"
           required
           maxLength={64}
@@ -91,181 +100,376 @@ function Login({ onSuccess }) {
             {error}
           </p>
         )}
-        <button type="submit" className="primary" disabled={busy}>
+        <button className="primary" disabled={busy}>
           {busy ? "验证中…" : "进入监控中心"}
         </button>
       </form>
     </main>
   );
 }
-function Metric({ icon: Icon, label, value, note, color }) {
+function ServiceList({ services }) {
+  const up = services.filter((item) => item.status === "up").length;
   return (
-    <div className="metric">
-      <div className="metric-label">
-        <Icon size={16} />
-        {label}
-      </div>
-      <strong className={color || ""}>{value}</strong>
-      <span>{note}</span>
-    </div>
-  );
-}
-function Status({ status }) {
-  return (
-    <span className={"status " + status}>
-      <i />
-      {{ up: "正常", down: "异常", pending: "待检测" }[status] || "待检测"}
-    </span>
-  );
-}
-function ServiceList({ services = [], onSelect }) {
-  return (
-    <div className="service-list">
-      {services.length === 0 ? (
-        <div className="empty-row">当前站点尚未配置探测项</div>
-      ) : (
-        services.map((service) => (
-          <button
-            className="service-row"
-            key={service.id}
-            onClick={() => onSelect(service)}
-          >
-            <div className={"service-icon " + service.status}>
-              {service.kind === "web" ? (
-                <Globe2 size={19} />
+    <section className="panel">
+      <header className="panel-heading">
+        <h2>服务状态</h2>
+        <span className="muted">
+          {up} / {services.length} 正常
+        </span>
+      </header>
+      <div className="service-list">
+        {services.map((item) => (
+          <details key={item.id} className="service-item">
+            <summary>
+              {item.kind === "web" ? (
+                <Globe2 size={16} />
               ) : (
-                <Server size={19} />
+                <Server size={16} />
               )}
+              <strong>{item.name}</strong>
+              <span className="mono muted service-ms">{ms(item.latency)}</span>
+              <Status status={item.status} />
+            </summary>
+            <div className="detail-content">
+              <p className="mono route">{item.url}</p>
+              <p>
+                最近探测 {time(item.checkedAt)} · HTTP {item.code || "—"}
+              </p>
+              <p>
+                24 小时探测成功率{" "}
+                {item.uptime == null ? "—" : item.uptime.toFixed(1) + "%"}（
+                {number(item.samples)} 个样本）
+              </p>
+              {item.error && <p className="error-text">{item.error}</p>}
+              <div className="probe-strip" aria-label="最近探测记录">
+                {(item.history || []).map((probe, index) => (
+                  <span
+                    key={index}
+                    className={probe.status}
+                    title={`${time(probe.checkedAt)} · ${probe.code || probe.error}`}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="service-name">
-              <strong>{service.name}</strong>
-              <span>
-                {service.group || "服务"} · {dateTime(service.checkedAt)}
-              </span>
-            </div>
-            <div className="service-spark">
-              <Sparkline samples={service.history} />
-            </div>
-            <div className="service-latency">
-              <strong>
-                {service.latency == null ? "—" : number(service.latency)}
-                <small> ms</small>
-              </strong>
-              <span>响应时间</span>
-            </div>
-            <div className="service-uptime">
-              <strong>
-                {service.uptime == null ? "—" : service.uptime.toFixed(1) + "%"}
-              </strong>
-              <span>24h 探测成功率</span>
-            </div>
-            <Status status={service.status} />
-            <ChevronRight size={15} className="row-chevron" />
-          </button>
-        ))
-      )}
-    </div>
+          </details>
+        ))}
+        {!services.length && <p className="empty">此项目未配置服务探测。</p>}
+      </div>
+    </section>
   );
 }
-function ServiceDetail({ service, onClose }) {
-  const dialog = useRef(null);
-  useEffect(() => {
-    const previous = document.activeElement;
-    const before = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    dialog.current?.querySelector("button")?.focus();
-    const keydown = (event) => {
-      if (event.key === "Escape") onClose();
-      if (event.key === "Tab") {
-        event.preventDefault();
-        dialog.current?.querySelector("button")?.focus();
-      }
-    };
-    document.addEventListener("keydown", keydown);
-    return () => {
-      document.removeEventListener("keydown", keydown);
-      document.body.style.overflow = before;
-      previous?.focus();
-    };
-  }, []);
+function Rankings({ traffic }) {
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <section
-        ref={dialog}
-        className="detail-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="detail-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header>
-          <h2 id="detail-title">{service.name}</h2>
+    <details className="panel ranking-details">
+      <summary>
+        页面与点击排行
+        <span className="muted">今日点击 {number(traffic?.clicks)}</span>
+      </summary>
+      <div className="rankings">
+        {[
+          { name: "页面浏览", rows: traffic?.pages, key: "views" },
+          {
+            name: "链接 / 按钮点击",
+            rows: traffic?.clickTargets,
+            key: "clicks",
+          },
+        ].map((group) => (
+          <section key={group.name}>
+            <h3>{group.name}</h3>
+            {group.rows?.length ? (
+              group.rows.map((row, index) => (
+                <div className="rank-row" key={index}>
+                  <span className="route">
+                    {row.label || row.path}
+                    <small>{names[row.site] || row.site}</small>
+                  </span>
+                  <b>{number(row[group.key])}</b>
+                </div>
+              ))
+            ) : (
+              <p className="empty">暂无记录</p>
+            )}
+          </section>
+        ))}
+      </div>
+    </details>
+  );
+}
+function Visitors({ site, updatedAt, unknown }) {
+  const [page, setPage] = useState(1),
+    [query, setQuery] = useState(""),
+    [search, setSearch] = useState(""),
+    [result, setResult] = useState(null),
+    [error, setError] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(query.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      page: String(page),
+      q: search,
+      ...(site ? { site } : {}),
+    });
+    request("visitors?" + params, { signal: controller.signal })
+      .then((value) => {
+        setResult(value);
+        setError("");
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") setError(error.message);
+      });
+    return () => controller.abort();
+  }, [site, page, search, updatedAt]);
+  return (
+    <section className="panel">
+      <header className="panel-heading">
+        <div>
+          <h2>
+            访问 IP{" "}
+            <span className="heading-count">{number(result?.total)}</span>
+          </h2>
+          <p>今日浏览与接口请求合并去重，按最近访问排序。</p>
+        </div>
+        <label className="search">
+          <Search size={16} />
+          <input
+            aria-label="搜索 IP"
+            placeholder="搜索 IP"
+            maxLength={45}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+      </header>
+      {error && (
+        <p role="alert" className="error-text note">
+          {error}
+        </p>
+      )}
+      <div className="table-scroll">
+        <table className="ip-table">
+          <thead>
+            <tr>
+              <th>IP 地址</th>
+              <th>项目</th>
+              <th>页面浏览</th>
+              <th>接口请求</th>
+              <th>5xx</th>
+              <th>最近访问</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result?.rows.map((row) => (
+              <tr key={row.ip}>
+                <td className="mono">{row.ip}</td>
+                <td>
+                  {row.sites
+                    .split(",")
+                    .map((site) => names[site] || site)
+                    .join(" / ")}
+                </td>
+                <td>{number(row.pv)}</td>
+                <td>{number(row.requests)}</td>
+                <td className={row.errors ? "error-text" : "muted"}>
+                  {number(row.errors)}
+                </td>
+                <td className="mono muted">{time(row.lastAt)}</td>
+              </tr>
+            ))}
+            {!result?.rows.length && (
+              <tr>
+                <td colSpan={6} className="empty">
+                  {result ? "暂无匹配的访问记录" : "正在读取…"}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <footer className="table-footer">
+        <span>
+          IP 不等于独立人数；共享网络会合并。
+          {unknown > 0 ? ` 今日 ${number(unknown)} 次历史浏览未记录 IP。` : ""}
+        </span>
+        <div>
           <button
             className="icon-button"
-            onClick={onClose}
-            aria-label="关闭详情"
+            aria-label="上一页"
+            disabled={!result || result.page <= 1}
+            onClick={() => setPage(result.page - 1)}
           >
-            <X size={18} />
+            <ArrowLeft size={16} />
           </button>
-        </header>
-        <Status status={service.status} />
-        <dl>
-          <dt>探测地址</dt>
-          <dd className="break-word">{service.url}</dd>
-          <dt>最近检查</dt>
-          <dd>{dateTime(service.checkedAt)}</dd>
-          <dt>响应状态</dt>
-          <dd>{service.code || "未收到响应"}</dd>
-          <dt>探测样本</dt>
-          <dd>{service.samples} 次（最近 24 小时）</dd>
-          {service.error && (
-            <>
-              <dt>异常原因</dt>
-              <dd className="error-text">{service.error}</dd>
-            </>
-          )}
-        </dl>
-        <h3>最近探测</h3>
-        <div className="probe-strip">
-          {service.history.map((sample, i) => (
-            <span
-              key={i}
-              className={sample.status}
-              title={`${dateTime(sample.checkedAt)} · ${sample.status === "up" ? "正常" : sample.error} · ${sample.latency} ms`}
-            />
-          ))}
+          <span>
+            {result?.page || 1} / {result?.pages || 1}
+          </span>
+          <button
+            className="icon-button"
+            aria-label="下一页"
+            disabled={!result || result.page >= result.pages}
+            onClick={() => setPage(result.page + 1)}
+          >
+            <ArrowRight size={16} />
+          </button>
         </div>
-        <p className="muted small">
-          探测成功率按已采集样本计算，并非上线以来的完整可用率。
-        </p>
-      </section>
-    </div>
+      </footer>
+    </section>
+  );
+}
+const order = {
+  down: 0,
+  warning: 1,
+  up: 2,
+  protected: 2,
+  stale: 3,
+  pending: 4,
+};
+function Interfaces({ data }) {
+  const [query, setQuery] = useState(""),
+    [onlyProblems, setOnlyProblems] = useState(false);
+  const rows = (data?.endpoints || [])
+    .filter(
+      (row) =>
+        `${row.name} ${row.method} ${row.path}`
+          .toLowerCase()
+          .includes(query.toLowerCase()) &&
+        (!onlyProblems || ["down", "warning"].includes(row.status)),
+    )
+    .sort(
+      (a, b) =>
+        order[a.status] - order[b.status] ||
+        b.requests - a.requests ||
+        a.path.localeCompare(b.path),
+    );
+  return (
+    <section className="panel">
+      <header className="panel-heading">
+        <div>
+          <h2>接口监控</h2>
+          <p>读接口安全探测，其余依据实际响应；无请求时不推断健康。</p>
+        </div>
+        <div className="interface-filters">
+          <label className="filter-check">
+            <input
+              type="checkbox"
+              checked={onlyProblems}
+              onChange={(e) => setOnlyProblems(e.target.checked)}
+            />
+            只看异常
+          </label>
+          <label className="search">
+            <Search size={16} />
+            <input
+              aria-label="搜索接口"
+              placeholder="搜索接口"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+        </div>
+      </header>
+      <div className="table-scroll">
+        <table className="endpoint-table">
+          <thead>
+            <tr>
+              <th>接口 / 路径</th>
+              <th>健康</th>
+              <th>请求</th>
+              <th>IP</th>
+              <th>平均耗时</th>
+              <th>4xx / 5xx</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td>
+                  <details className="endpoint-detail">
+                    <summary>
+                      <strong>{row.name}</strong>
+                      <span className="endpoint-path">
+                        <b
+                          className={`method ${row.method === "POST" ? "post" : ""}`}
+                        >
+                          {row.method}
+                        </b>
+                        <code>{row.path}</code>
+                      </span>
+                    </summary>
+                    <div className="detail-content">
+                      <p>
+                        判断来源：
+                        {row.source === "probe"
+                          ? "只读主动探测"
+                          : "最近 5 分钟真实请求"}
+                      </p>
+                      <p>
+                        最近请求 {time(row.lastAt)} · HTTP {row.lastCode || "—"}
+                      </p>
+                      {row.probe && (
+                        <p>
+                          最近探测 {time(row.probe.checkedAt)} · HTTP{" "}
+                          {row.probe.code || "—"}
+                        </p>
+                      )}
+                      {row.probe?.error && (
+                        <p className="error-text">{row.probe.error}</p>
+                      )}
+                      {row.path.endsWith(":unmatched") && (
+                        <p>未匹配已知路由的请求合并记录，不保存原始路径。</p>
+                      )}
+                    </div>
+                  </details>
+                </td>
+                <td>
+                  <Status status={row.status} />
+                </td>
+                <td>{number(row.requests)}</td>
+                <td>{number(row.ips)}</td>
+                <td className="mono">{ms(row.latency)}</td>
+                <td>
+                  <span className={row.clientErrors ? "amber" : "muted"}>
+                    {number(row.clientErrors)}
+                  </span>{" "}
+                  /{" "}
+                  <span className={row.serverErrors ? "error-text" : "muted"}>
+                    {number(row.serverErrors)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan={6} className="empty">
+                  暂无匹配接口
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="note">
+        请求统计为今日累计，排除监控探测。401 / 403 单独计入
+        4xx，不视为服务宕机。点击接口展开详情。
+      </p>
+    </section>
   );
 }
 export default function App() {
   const [site, setSite] = useState(""),
-    [section, setSection] = useState("overview"),
+    [tab, setTab] = useState("overview"),
     [metric, setMetric] = useState("pv"),
-    [selected, setSelected] = useState(null),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
   const monitor = useMonitor(site),
     data = monitor.data,
-    traffic = data?.traffic;
-  const services = data?.services || [],
-    up = services.filter((s) => s.status === "up").length,
-    down = services.filter((s) => s.status === "down").length,
-    ready = services.filter((s) => s.status !== "pending").length;
-  const average = up
-    ? Math.round(
-        services
-          .filter((s) => s.status === "up")
-          .reduce((n, s) => n + s.latency, 0) / up,
-      )
-    : null;
-  const liveSelected = selected
-    ? services.find((s) => s.id === selected.id) || selected
-    : null;
+    traffic = data?.traffic,
+    api = data?.requests;
   async function check() {
     setBusy(true);
     setNotice("");
@@ -280,328 +484,182 @@ export default function App() {
       setBusy(false);
     }
   }
+  async function logout() {
+    try {
+      await request("logout", { method: "POST" });
+      monitor.reconnect();
+    } catch (error) {
+      setNotice(error.message);
+    }
+  }
   if (monitor.needsLogin) return <Login onSuccess={monitor.reconnect} />;
   return (
-    <div className="monitor-app">
-      <aside className="sidebar">
-        <a className="brand" href={import.meta.env.BASE_URL}>
-          <span className="brand-icon">
-            <Activity size={22} />
-          </span>
-          <div>
-            Niko<span>MONITOR</span>
-          </div>
+    <main className="monitor-app">
+      <header className="app-header">
+        <a href={import.meta.env.BASE_URL} className="brand">
+          <Activity size={24} />
+          <h1>
+            Niko <span>Monitor</span>
+          </h1>
         </a>
-        <div className="nav-title">工作空间</div>
-        <nav>
-          {[
-            { id: "overview", label: "总览", icon: LayoutDashboard },
-            { id: "health", label: "服务健康", icon: HeartPulse },
-            { id: "traffic", label: "访问分析", icon: BarChart3 },
-          ].map((item) => (
-            <button
-              key={item.id}
-              className={section === item.id ? "active" : ""}
-              onClick={() => setSection(item.id)}
-            >
-              <item.icon size={18} />
-              {item.label}
-              {item.id === "health" && down > 0 && (
-                <span className="count-badge">{down}</span>
-              )}
-            </button>
-          ))}
-        </nav>
-        <div className="nav-title projects-title">已接入项目</div>
-        <div className="project-list">
-          <button onClick={() => setSite("niko-main")}>
-            <span className="project-dot pink" />
-            niko-main
+        <div className="header-actions">
+          <span className={`connection ${monitor.connection}`}>
+            <i />
+            {monitor.connection === "live" ? "实时" : "连接中"}
+          </span>
+          <select
+            aria-label="筛选项目"
+            value={site}
+            onChange={(e) => setSite(e.target.value)}
+          >
+            <option value="">全部项目</option>
+            {(data?.sites || []).map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+            <option value="niko-cli">CLI 分发</option>
+          </select>
+          <button
+            className="icon-button"
+            aria-label="立即检测"
+            title="立即检测"
+            disabled={busy || !data}
+            onClick={check}
+          >
+            <RefreshCw size={17} className={busy ? "spinning" : ""} />
           </button>
-          <button onClick={() => setSite("niko-wenku")}>
-            <span className="project-dot blue" />
-            niko-wenku
+          <button
+            className="icon-button"
+            aria-label="退出登录"
+            title="退出登录"
+            onClick={logout}
+          >
+            <LogOut size={17} />
           </button>
-          <span>
-            <span className="project-dot green" />
-            niko-cli <small>分发检测</small>
-          </span>
         </div>
-        <div className="sidebar-footer">
-          <PawPrint size={20} />
-          <span>
-            Niko 系列监控中心<small>独立采集 · 只读探测</small>
-          </span>
-        </div>
-      </aside>
-      <main className="workspace">
-        <header className="topbar">
-          <div className="breadcrumb">
-            工作空间
-            <ChevronRight size={14} />
-            <strong>
-              {section === "overview"
-                ? "总览"
-                : section === "health"
-                  ? "服务健康"
-                  : "访问分析"}
-            </strong>
-          </div>
-          <span className={"connection " + monitor.connection}>
-            <Radio size={13} />
-            {
-              {
-                live: "实时连接",
-                connecting: "正在连接",
-                reconnecting: "重新连接中",
-                offline: "连接中断",
-              }[monitor.connection]
-            }
-          </span>
-        </header>
-        <div className="page-content">
-          <div className="page-heading">
-            <div>
-              <h1>
-                {section === "overview"
-                  ? "一眼，看见运行状态。"
-                  : section === "health"
-                    ? "服务健康"
-                    : "访问分析"}
-              </h1>
-              <p>
-                {section === "traffic"
-                  ? "了解网站访问，以及每一次有价值的点击。"
-                  : "主站、文库与命令分发，集中监测。"}
-              </p>
-            </div>
-            <div className="page-actions">
-              <label className="sr-only" htmlFor="site">
-                筛选站点
-              </label>
-              <select
-                id="site"
-                value={site}
-                onChange={(e) => setSite(e.target.value)}
-              >
-                <option value="">全部项目</option>
-                {(
-                  data?.sites || [
-                    { id: "niko-main", name: "主站" },
-                    { id: "niko-wenku", name: "轻小说文库" },
-                  ]
-                ).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="secondary"
-                onClick={check}
-                disabled={busy || !data}
-              >
-                <RefreshCw size={15} className={busy ? "spinning" : ""} />
-                {busy ? "检测中" : "立即检测"}
-              </button>
-            </div>
-          </div>
-          {(monitor.error || notice) && (
-            <div className="error-banner" role="alert">
-              {monitor.error || notice}
-              <button onClick={monitor.reconnect}>重新连接</button>
-            </div>
-          )}
-          {section !== "traffic" && (
-            <section
-              className={
-                "health-banner " +
-                (down
-                  ? "has-error"
-                  : ready === services.length && ready > 0
-                    ? "healthy"
-                    : "waiting")
-              }
-            >
-              <div className="health-symbol">
-                {down ? <Activity size={24} /> : <ShieldCheck size={24} />}
-              </div>
-              <div>
-                <strong>
-                  {down
-                    ? `${down} 项服务需要关注`
-                    : ready > 0 && ready === services.length
-                      ? "所有服务运行正常"
-                      : "正在确认各项服务状态"}
-                </strong>
-                <p>
-                  {down
-                    ? services
-                        .filter((s) => s.status === "down")
-                        .map((s) => s.name)
-                        .join("、")
-                    : "独立探测，不影响文库扫描、更新与下载。"}
-                </p>
-              </div>
-              <span>
-                {up}/{services.length || "—"} 正常
-                <small>约每 {(data?.intervalMs || 15000) / 1000} 秒检测</small>
-              </span>
-            </section>
-          )}
-          <section className="metrics" aria-label="今日统计">
-            <Metric
-              icon={Globe2}
-              label="今日访问"
-              value={number(traffic?.pv)}
-              note="页面浏览量 · PV"
-            />
-            <Metric
-              icon={Users}
-              label="今日访客"
-              value={number(traffic?.uv)}
-              note="匿名浏览会话 · UV"
-            />
-            <Metric
-              icon={MousePointer2}
-              label="今日点击"
-              value={number(traffic?.clicks)}
-              note="链接、卡片与按钮"
-            />
-            <Metric
-              icon={section === "traffic" ? Clock3 : HeartPulse}
-              label="平均响应"
-              value={average == null ? "—" : number(average) + " ms"}
-              note="当前正常服务的探测延迟"
-              color="green-text"
-            />
-          </section>
-          {section !== "health" && (
-            <section className="panel traffic-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>访问趋势</h2>
-                  <p>最近 24 小时 · 小时聚合</p>
-                </div>
-                <div className="segmented" aria-label="趋势指标">
-                  <button
-                    className={metric === "pv" ? "selected" : ""}
-                    onClick={() => setMetric("pv")}
-                  >
-                    访问量
-                  </button>
-                  <button
-                    className={metric === "clicks" ? "selected" : ""}
-                    onClick={() => setMetric("clicks")}
-                  >
-                    点击量
-                  </button>
-                </div>
-              </div>
-              <TrafficChart points={traffic?.trend} metric={metric} />
-            </section>
-          )}
-          {section !== "traffic" && (
-            <section className="panel services-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>
-                    服务状态
-                    <span className="heading-count">{services.length}</span>
-                  </h2>
-                  <p>点击服务，查看最近探测记录与异常原因</p>
-                </div>
-                <span className="muted small">实时探测</span>
-              </div>
-              <ServiceList services={services} onSelect={setSelected} />
-              <div className="panel-footnote">
-                <Clock3 size={13} />
-                最后同步 {dateTime(data?.now)}
-                <span>探测数据自接入时开始累计</span>
-              </div>
-            </section>
-          )}
-          {section !== "health" && (
-            <div className="rankings">
-              <section className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <h2>热门页面</h2>
-                    <p>今日浏览量</p>
-                  </div>
-                  <Globe2 size={17} className="muted" />
-                </div>
-                {traffic?.pages.length ? (
-                  <div className="rank-list">
-                    {traffic.pages.map((page, i) => (
-                      <div key={page.site + page.path}>
-                        <span className="rank-index">
-                          {String(i + 1).padStart(2, "0")}
-                        </span>
-                        <div>
-                          <strong>{page.path}</strong>
-                          <span>{page.site}</span>
-                        </div>
-                        <b>{number(page.views)}</b>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-state">
-                    <Globe2 size={25} />
-                    <strong>还没有页面访问记录</strong>
-                    <span>网站接入采集后自动显示</span>
-                  </div>
-                )}
-              </section>
-              <section className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <h2>点击排行</h2>
-                    <p>今日链接与按钮点击</p>
-                  </div>
-                  <MousePointer2 size={17} className="muted" />
-                </div>
-                {traffic?.clickTargets.length ? (
-                  <div className="rank-list">
-                    {traffic.clickTargets.map((target, i) => (
-                      <div key={target.site + target.path + target.label}>
-                        <span className="rank-index">
-                          {String(i + 1).padStart(2, "0")}
-                        </span>
-                        <div>
-                          <strong>{target.label || target.path}</strong>
-                          <span>{target.site}</span>
-                        </div>
-                        <b>{number(target.clicks)}</b>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-state">
-                    <MousePointer2 size={25} />
-                    <strong>等待第一次点击</strong>
-                    <span>卡片、链接与按钮会分别统计</span>
-                  </div>
-                )}
-              </section>
-            </div>
-          )}
-          <footer className="page-footer">
-            <span>
-              <LockKeyhole size={12} />
-              会话匿名化 · 不采集表单内容
-            </span>
-            <span>今日统计以北京时间 00:00 为起点</span>
-          </footer>
-        </div>
-      </main>
-      {liveSelected && (
-        <ServiceDetail
-          service={liveSelected}
-          onClose={() => setSelected(null)}
-        />
+      </header>
+      <nav className="tabs" aria-label="监控视图">
+        {[
+          { id: "overview", label: "概览", Icon: ChartNoAxesCombined },
+          { id: "visitors", label: "访问 IP", Icon: Users },
+          { id: "interfaces", label: "接口", Icon: Network },
+        ].map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            aria-current={tab === id ? "page" : undefined}
+            className={tab === id ? "active" : ""}
+            onClick={() => setTab(id)}
+          >
+            <Icon size={17} />
+            {label}
+          </button>
+        ))}
+        <span>今日 · 北京时间</span>
+      </nav>
+      {(monitor.error || notice) && (
+        <p className="error-banner" role="alert">
+          {monitor.error || notice}
+          <button onClick={monitor.reconnect}>重连</button>
+        </p>
       )}
-    </div>
+      {data && data.ingestion.status !== "up" && (
+        <p className="collection-notice">
+          {data.ingestion.enabled
+            ? data.ingestion.error || "接口采集连接中…"
+            : "此环境未启用服务端日志采集；接口请求统计等待接入。"}
+        </p>
+      )}
+      {data?.ingestion.lagBytes > 262144 && (
+        <p className="collection-notice">
+          正在追赶接口日志，统计可能稍有延迟。
+        </p>
+      )}
+      {!data ? (
+        <p className="empty" role="status">
+          正在读取监控数据…
+        </p>
+      ) : (
+        <>
+          {tab === "overview" && (
+            <>
+              <section className="metrics" aria-label="今日统计">
+                {[
+                  {
+                    label: "页面浏览",
+                    value: traffic?.pv,
+                    note: "PV · 浏览器采集",
+                  },
+                  {
+                    label: "访问 IP",
+                    value: traffic?.ips,
+                    note: "浏览与接口去重",
+                  },
+                  {
+                    label: "接口请求",
+                    value: api?.total,
+                    note: "包含 CLI 调用",
+                  },
+                  {
+                    label: "服务端错误",
+                    value: api?.serverErrors,
+                    note: "HTTP 5xx",
+                    error: api?.serverErrors > 0,
+                  },
+                ].map((item) => (
+                  <div className="metric" key={item.label}>
+                    <span>{item.label}</span>
+                    <strong className={item.error ? "error-text" : ""}>
+                      {number(item.value)}
+                    </strong>
+                    <small>{item.note}</small>
+                  </div>
+                ))}
+              </section>
+              <div className="overview-grid">
+                <section className="panel">
+                  <header className="panel-heading">
+                    <div>
+                      <h2>访问趋势</h2>
+                      <p>最近 24 小时</p>
+                    </div>
+                    <div className="segmented">
+                      {[
+                        { id: "pv", label: "浏览" },
+                        { id: "clicks", label: "点击" },
+                      ].map((item) => (
+                        <button
+                          key={item.id}
+                          className={metric === item.id ? "selected" : ""}
+                          onClick={() => setMetric(item.id)}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </header>
+                  <TrafficChart points={traffic?.trend} metric={metric} />
+                </section>
+                <ServiceList services={data.services} />
+              </div>
+              <Rankings traffic={traffic} />
+            </>
+          )}
+          {tab === "visitors" && (
+            <Visitors
+              key={site}
+              site={site}
+              updatedAt={data.now}
+              unknown={traffic?.unknownIpViews}
+            />
+          )}
+          {tab === "interfaces" && <Interfaces key={site} data={api} />}
+          <footer className="app-footer">
+            <span>同步于 {time(data.now)}</span>
+            <span>约 {data.intervalMs / 1000} 秒探测 · 原始数据保留 30 天</span>
+          </footer>
+        </>
+      )}
+    </main>
   );
 }

@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
+SupplementaryGroups=niko-monitor
 WorkingDirectory=/srv/niko-archive/niko-monitor
 EnvironmentFile=/etc/niko-monitor.env
 Environment=NODE_ENV=production
@@ -13,6 +14,7 @@ Environment=MONITOR_HOST=127.0.0.1
 Environment=MONITOR_PORT=4182
 Environment=MONITOR_STATE_DIR=/var/lib/niko-monitor
 Environment=MONITOR_CONFIG=/srv/niko-archive/niko-monitor/monitor.config.production.json
+Environment=MONITOR_ACCESS_LOG=/var/log/niko-monitor/access.jsonl
 ExecStart=/usr/bin/node server/index.mjs
 Restart=on-failure
 RestartSec=5

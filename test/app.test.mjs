@@ -82,10 +82,15 @@ test("collection persists real counts and rejects foreign origins, unknown sites
 
 test("private statistics require login, cross-origin login is rejected, and events remain public", async (t) => {
   const password = "test-admin-password-only";
-  const adminAccount = { username: "test-admin", salt: "test-salt", passwordHash: scryptSync(password, "test-salt", 64).toString("hex") };
+  const adminAccount = {
+    username: "test-admin",
+    salt: "test-salt",
+    passwordHash: scryptSync(password, "test-salt", 64).toString("hex"),
+  };
   const { base } = await setup(t, { adminAccount });
   assert.equal((await fetch(base + "/api/snapshot")).status, 401);
   assert.equal((await fetch(base + "/api/events")).status, 401);
+  assert.equal((await fetch(base + "/api/visitors")).status, 401);
   const login = (value, origin = base, username = "test-admin") =>
     fetch(base + "/api/login", {
       method: "POST",
@@ -96,14 +101,30 @@ test("private statistics require login, cross-origin login is rejected, and even
   assert.equal((await login("incorrect")).status, 401);
   assert.equal((await login(password, base, "unknown-admin")).status, 401);
   assert.equal((await login("x".repeat(1025))).status, 400);
-  assert.equal((await fetch(base + "/api/login", { method: "POST", headers: { Origin: base }, body: JSON.stringify({ token: "legacy-token-is-not-a-login" }) })).status, 400);
+  assert.equal(
+    (
+      await fetch(base + "/api/login", {
+        method: "POST",
+        headers: { Origin: base },
+        body: JSON.stringify({ token: "legacy-token-is-not-a-login" }),
+      })
+    ).status,
+    400,
+  );
   const response = await login(password);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, username: "test-admin", role: "admin" });
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    username: "test-admin",
+    role: "admin",
+  });
   const cookie = response.headers.get("set-cookie").split(";")[0];
   assert.match(response.headers.get("set-cookie"), /HttpOnly/i);
   assert.match(response.headers.get("set-cookie"), /SameSite=Strict/i);
-  assert.doesNotMatch(response.headers.get("set-cookie"), /test-admin|test-admin-password-only/);
+  assert.doesNotMatch(
+    response.headers.get("set-cookie"),
+    /test-admin|test-admin-password-only/,
+  );
   assert.equal(
     (await fetch(base + "/api/snapshot", { headers: { Cookie: cookie } }))
       .status,
@@ -122,21 +143,108 @@ test("private statistics require login, cross-origin login is rejected, and even
   );
 });
 
+test("browser-supplied IP is ignored and visitor lists remain filtered, validated and private", async (t) => {
+  const { monitor, base } = await setup(t);
+  await send(base, { ...event, ip: "198.51.100.1" });
+  const visitors = await (await fetch(base + "/api/visitors")).json();
+  assert.equal(visitors.total, 1);
+  assert.equal(visitors.rows[0].ip, "127.0.0.1");
+  assert.equal((await fetch(base + "/api/visitors?page=-1")).status, 400);
+  assert.equal((await fetch(base + "/api/visitors?site=unknown")).status, 400);
+  assert.equal(monitor.snapshot().traffic.ips, 1);
+});
+
+test("interface probes never execute write routes and treat protected endpoint authentication as healthy", async (t) => {
+  const calls = [];
+  const target = createServer((req, res) => {
+    calls.push(req.method + " " + req.url);
+    res.setHeader("content-type", "application/json");
+    if (req.url.endsWith("/worker/status")) {
+      res.statusCode = 401;
+      res.end(JSON.stringify({ error: "login required" }));
+    } else if (req.url.endsWith("/auth/session"))
+      res.end(JSON.stringify({ authenticated: false }));
+    else if (req.url.endsWith("/library"))
+      res.end(JSON.stringify({ books: [] }));
+    else res.end(JSON.stringify({ ok: true }));
+  });
+  const targetBase = await listen(target);
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        target.closeAllConnections();
+        target.close(resolve);
+      }),
+  );
+  const { monitor } = await setup(t, {
+    sites: [{ id: "niko-wenku", url: targetBase + "/nikowenku-archive/" }],
+    probeEndpoints: true,
+  });
+  await monitor.poll();
+  assert.equal(calls.length, 4);
+  assert.ok(
+    calls.every((call) => call.startsWith("GET /nikowenku-archive/api/")),
+  );
+  assert.ok(
+    !calls.some((call) =>
+      /start|stop|publish|login|register|captcha/.test(call),
+    ),
+  );
+  const rows = monitor.snapshot().requests.endpoints;
+  assert.equal(
+    rows.find((row) => row.path === "/api/worker/status").status,
+    "protected",
+  );
+  assert.equal(rows.find((row) => row.path === "/api/library").status, "up");
+  assert.equal(
+    rows.find((row) => row.path === "/api/worker/start").status,
+    "pending",
+  );
+});
+
 test("fixed admin login is required by default and repeated wrong passwords are limited", async (t) => {
   const password = "rate-limit-password-only";
-  const adminAccount = { username: "test-admin", salt: "test-salt", passwordHash: scryptSync(password, "test-salt", 64).toString("hex") };
+  const adminAccount = {
+    username: "test-admin",
+    salt: "test-salt",
+    passwordHash: scryptSync(password, "test-salt", 64).toString("hex"),
+  };
   const { base } = await setup(t, { adminAccount });
   for (let i = 0; i < 8; i++) {
-    const response = await fetch(base + "/api/login", { method: "POST", headers: { Origin: base }, body: JSON.stringify({ username: "test-admin", password: "incorrect-password" }) });
+    const response = await fetch(base + "/api/login", {
+      method: "POST",
+      headers: { Origin: base },
+      body: JSON.stringify({
+        username: "test-admin",
+        password: "incorrect-password",
+      }),
+    });
     assert.equal(response.status, 401);
     assert.equal(response.headers.get("set-cookie"), null);
   }
-  assert.equal((await fetch(base + "/api/login", { method: "POST", headers: { Origin: base }, body: JSON.stringify({ username: "test-admin", password }) })).status, 429);
+  assert.equal(
+    (
+      await fetch(base + "/api/login", {
+        method: "POST",
+        headers: { Origin: base },
+        body: JSON.stringify({ username: "test-admin", password }),
+      })
+    ).status,
+    429,
+  );
   const secured = createMonitor({ dbFile: ":memory:" });
   t.after(() => secured.close());
   const securedBase = await listen(secured.server);
   assert.equal((await fetch(securedBase + "/api/snapshot")).status, 401);
-  assert.throws(() => createMonitor({ dbFile: ":memory:", publicOrigin: "https://niko.example", adminAccount: null }), /管理员/);
+  assert.throws(
+    () =>
+      createMonitor({
+        dbFile: ":memory:",
+        publicOrigin: "https://niko.example",
+        adminAccount: null,
+      }),
+    /管理员/,
+  );
 });
 
 test("health checks distinguish a JSON API failure from HTTP success, record downtime and recover", async (t) => {

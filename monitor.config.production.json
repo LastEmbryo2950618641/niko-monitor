@@ -1,4 +1,5 @@
 {
+  "probeEndpoints": true,
   "sites": [
     { "id": "niko-main", "name": "主站", "url": "https://111.229.32.85/", "origins": ["http://111.229.32.85", "https://111.229.32.85"] },
     { "id": "niko-wenku", "name": "轻小说文库", "url": "https://111.229.32.85/nikowenku-archive/", "origins": ["http://111.229.32.85", "https://111.229.32.85"] }

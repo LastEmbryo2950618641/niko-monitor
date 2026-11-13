@@ -3,10 +3,11 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isIP } from "node:net";
 import { MonitorStore } from "./store.mjs";
 import { checkService } from "./health.mjs";
 import { ADMIN_ACCOUNT, verifyAdmin } from "./admin-account.mjs";
+import { clientIp, endpoints, endpointHealth } from "./endpoints.mjs";
+import { AccessLogReader } from "./access-log.mjs";
 
 const json = (res, status, body) => {
   res.writeHead(status, {
@@ -50,9 +51,36 @@ export function createMonitor({
   intervalMs = 15000,
   frontend,
   development = false,
+  accessLog = "",
+  probeEndpoints = false,
 } = {}) {
-  if (publicOrigin && !adminAccount) throw new Error("公开部署必须启用管理员登录");
+  if (publicOrigin && !adminAccount)
+    throw new Error("公开部署必须启用管理员登录");
   const store = new MonitorStore(dbFile);
+  const reader = new AccessLogReader(store, accessLog);
+  const interfaceProbes = probeEndpoints
+    ? endpoints
+        .filter(
+          (item) => item.probe && sites.some((site) => site.id === item.site),
+        )
+        .map((item) => {
+          const base = sites.find((site) => site.id === item.site).url;
+          const path =
+            item.site === "niko-wenku"
+              ? item.path.replace(/^\/api\//, "api/")
+              : item.path;
+          return {
+            ...item,
+            id: "endpoint:" + item.id,
+            url: new URL(path, base).href,
+            kind: "endpoint",
+            expectStatus: item.probe === "protected" ? [401, 403] : [200],
+            jsonCheck: ["health", "session"].includes(item.probe)
+              ? item.probe
+              : undefined,
+          };
+        })
+    : [];
   const peers = new Map(),
     sessions = new Map(),
     rates = new Map(),
@@ -61,24 +89,71 @@ export function createMonitor({
   let timer,
     pending,
     notifyTimer,
+    accessTimer,
     closed = false;
-  const snapshot = (site = "") => ({
-    now: Date.now(),
-    intervalMs,
-    sites: sites.map(({ id, name, url }) => ({ id, name, url })),
-    traffic: store.summary(Date.now(), site),
-    services: services
+  const snapshot = (site = "") => {
+    const now = Date.now(),
+      requests = store.requests(now, site);
+    const known = endpoints
       .filter((item) => !site || item.site === site)
-      .map(({ id, name, site, url, kind, group }) => ({
-        id,
-        name,
-        site,
-        url,
-        kind,
-        group,
-        ...store.health(id),
-      })),
-  });
+      .map((item) => {
+        const row = requests.endpoints.find(
+          (row) =>
+            row.site === item.site &&
+            row.method === item.method &&
+            row.path === item.path,
+        );
+        const probe = interfaceProbes.some(
+          (probe) => probe.id === "endpoint:" + item.id,
+        )
+          ? store.health("endpoint:" + item.id)
+          : null;
+        return {
+          ...item,
+          ...row,
+          ...endpointHealth(row, probe, now),
+          probe,
+          requests: row?.requests || 0,
+          ips: row?.ips || 0,
+          serverErrors: row?.serverErrors || 0,
+          clientErrors: row?.clientErrors || 0,
+        };
+      });
+    for (const row of requests.endpoints)
+      if (
+        !known.some(
+          (item) =>
+            item.site === row.site &&
+            item.method === row.method &&
+            item.path === row.path,
+        )
+      )
+        known.push({
+          ...row,
+          id: row.method + " " + row.path,
+          name: row.path.endsWith(":unmatched") ? "未匹配路由" : "其他请求方法",
+          ...endpointHealth(row, null, now),
+        });
+    return {
+      now: Date.now(),
+      intervalMs,
+      sites: sites.map(({ id, name, url }) => ({ id, name, url })),
+      traffic: store.summary(Date.now(), site),
+      requests: { ...requests, endpoints: known },
+      ingestion: { ...reader.state },
+      services: services
+        .filter((item) => !site || item.site === site)
+        .map(({ id, name, site, url, kind, group }) => ({
+          id,
+          name,
+          site,
+          url,
+          kind,
+          group,
+          ...store.health(id),
+        })),
+    };
+  };
   function notify() {
     if (closed || notifyTimer) return;
     notifyTimer = setTimeout(() => {
@@ -102,7 +177,7 @@ export function createMonitor({
     if (closed) return;
     if (pending) return pending;
     pending = Promise.all(
-      services.map(async (service) => {
+      [...services, ...interfaceProbes].map(async (service) => {
         const result = await checkService(service, shutdown.signal);
         if (!closed) store.probe(result);
       }),
@@ -159,7 +234,7 @@ export function createMonitor({
         return;
       }
       if (req.method !== "POST") throw fail(405, "仅允许 POST");
-      const key = req.socket.remoteAddress;
+      const key = clientIp(req);
       const rate = rates.get(key) || { since: Date.now(), count: 0 };
       if (Date.now() - rate.since > 60000) {
         rate.since = Date.now();
@@ -199,7 +274,7 @@ export function createMonitor({
         /^[A-Za-z0-9.-]{0,200}$/.test(event.referrer)
           ? event.referrer
           : "";
-      const accepted = store.event(event);
+      const accepted = store.event({ ...event, ip: clientIp(req) });
       json(res, 202, { accepted });
       notify();
       return;
@@ -231,24 +306,30 @@ export function createMonitor({
       if (
         typeof body?.username !== "string" ||
         typeof body?.password !== "string" ||
-        !body.username.length || body.username.length > 64 ||
-        !body.password.length || body.password.length > 1024
-      ) throw fail(400, "请填写有效的管理员账号和密码");
-      const remote = req.socket.remoteAddress;
-      const forwarded = req.headers["x-real-ip"];
-      const key = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote) &&
-        typeof forwarded === "string" && isIP(forwarded) ? forwarded : remote;
+        !body.username.length ||
+        body.username.length > 64 ||
+        !body.password.length ||
+        body.password.length > 1024
+      )
+        throw fail(400, "请填写有效的管理员账号和密码");
+      const key = clientIp(req);
       let rate = loginRates.get(key);
       if (!rate || Date.now() - rate.since >= 15 * 60000) {
         rate = { since: Date.now(), attempts: 0 };
         loginRates.set(key, rate);
       }
       if (rate.attempts >= 8) {
-        res.setHeader("Retry-After", String(Math.ceil((rate.since + 15 * 60000 - Date.now()) / 1000)));
+        res.setHeader(
+          "Retry-After",
+          String(Math.ceil((rate.since + 15 * 60000 - Date.now()) / 1000)),
+        );
         throw fail(429, "登录尝试过多，请稍后再试");
       }
       rate.attempts++;
-      if (!adminAccount || !await verifyAdmin(body.username, body.password, adminAccount))
+      if (
+        !adminAccount ||
+        !(await verifyAdmin(body.username, body.password, adminAccount))
+      )
         throw fail(401, "账号或密码不正确");
       loginRates.delete(key);
       for (const [key, expires] of sessions)
@@ -260,13 +341,21 @@ export function createMonitor({
         "Set-Cookie",
         `niko_monitor=${session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200${ownOrigin(req).startsWith("https:") ? "; Secure" : ""}`,
       );
-      json(res, 200, { ok: true, username: adminAccount.username, role: "admin" });
+      json(res, 200, {
+        ok: true,
+        username: adminAccount.username,
+        role: "admin",
+      });
       return;
     }
     if (path.startsWith("/api/")) {
       if (!authenticated(req)) throw fail(401, "请先登录监控中心");
       const site = url.searchParams.get("site") || "";
-      if (site && !sites.some((item) => item.id === site))
+      if (
+        site &&
+        !sites.some((item) => item.id === site) &&
+        !services.some((item) => item.site === site)
+      )
         throw fail(400, "站点无效");
       if (path === "/api/logout" && req.method === "POST") {
         sameOrigin(req);
@@ -282,6 +371,14 @@ export function createMonitor({
       }
       if (path === "/api/snapshot" && req.method === "GET") {
         json(res, 200, snapshot(site));
+        return;
+      }
+      if (path === "/api/visitors" && req.method === "GET") {
+        const page = Number(url.searchParams.get("page") || 1),
+          query = url.searchParams.get("q") || "";
+        if (!Number.isSafeInteger(page) || page < 1 || query.length > 45)
+          throw fail(400, "IP 查询参数无效");
+        json(res, 200, store.visitors(Date.now(), site, page, query));
         return;
       }
       if (path === "/api/check" && req.method === "POST") {
@@ -375,7 +472,20 @@ export function createMonitor({
     store,
     snapshot,
     poll,
+    reader,
     start() {
+      if (accessLog) {
+        const readLoop = async () => {
+          const before = reader.state.status;
+          const changed = await reader.read();
+          if (!closed) {
+            if (changed || before !== reader.state.status) notify();
+            accessTimer = setTimeout(readLoop, 2000);
+            accessTimer.unref();
+          }
+        };
+        void readLoop();
+      }
       const loop = async () => {
         try {
           await poll();
@@ -394,6 +504,7 @@ export function createMonitor({
       closed = true;
       clearTimeout(timer);
       clearTimeout(notifyTimer);
+      clearTimeout(accessTimer);
       clearInterval(maintenance);
       shutdown.abort();
       for (const res of peers.keys()) res.end();
@@ -401,6 +512,7 @@ export function createMonitor({
       if (server.listening)
         await new Promise((resolve) => server.close(resolve));
       await pending;
+      await reader.pending;
       store.close();
     },
   };

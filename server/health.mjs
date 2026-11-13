@@ -2,7 +2,10 @@ export async function checkService(service, signal) {
   const began = performance.now();
   let code = null;
   try {
+    if (service.method && !["GET", "HEAD"].includes(service.method))
+      throw new Error("健康探测仅允许读取");
     const response = await fetch(service.url, {
+      method: service.method || "GET",
       signal: AbortSignal.any([
         AbortSignal.timeout(service.timeoutMs || 5000),
         ...(signal ? [signal] : []),
@@ -16,11 +19,20 @@ export async function checkService(service, signal) {
       },
     });
     code = response.status;
-    if (!response.ok) {
+    if (
+      service.expectStatus ? !service.expectStatus.includes(code) : !response.ok
+    ) {
       await response.body?.cancel();
       throw new Error("HTTP " + code);
     }
-    if (["api", "npm"].includes(service.kind)) {
+    if (
+      service.kind === "endpoint" &&
+      !(response.headers.get("content-type") || "").includes("application/json")
+    ) {
+      await response.body?.cancel();
+      throw new Error("接口未返回 JSON 响应");
+    }
+    if (["api", "npm"].includes(service.kind) || service.jsonCheck) {
       const reader = response.body.getReader();
       let content = "",
         length = 0;
@@ -42,6 +54,13 @@ export async function checkService(service, signal) {
         throw new Error("API 健康状态异常");
       if (service.kind === "api" && json.ok !== true)
         throw new Error("API 未返回明确的健康状态");
+      if (service.jsonCheck === "health" && json.ok !== true)
+        throw new Error("接口健康状态异常");
+      if (
+        service.jsonCheck === "session" &&
+        typeof json.authenticated !== "boolean"
+      )
+        throw new Error("登录状态响应异常");
       if (
         service.kind === "npm" &&
         (json.name !== "nikowenku-archive" || typeof json.version !== "string")

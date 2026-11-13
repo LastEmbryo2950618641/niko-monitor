@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
+import { normalizeIp } from "./endpoints.mjs";
 
 const hour = 3600000;
 export function chinaDayStart(now) {
@@ -22,7 +23,19 @@ export class MonitorStore {
       CREATE TABLE IF NOT EXISTS probes (
         id TEXT NOT NULL, status TEXT NOT NULL, latency REAL, code INTEGER,
         checkedAt INTEGER NOT NULL, error TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS probes_id_at ON probes(id, checkedAt);`);
+      CREATE INDEX IF NOT EXISTS probes_id_at ON probes(id, checkedAt);
+      CREATE TABLE IF NOT EXISTS requests (
+        id TEXT PRIMARY KEY, site TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL,
+        ip TEXT NOT NULL, code INTEGER NOT NULL, latency REAL NOT NULL, at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS requests_at_site ON requests(at, site);
+      CREATE INDEX IF NOT EXISTS requests_endpoint_at ON requests(site, method, path, at);`);
+    if (
+      !this.db
+        .prepare("PRAGMA table_info(events)")
+        .all()
+        .some((column) => column.name === "ip")
+    )
+      this.db.exec("ALTER TABLE events ADD COLUMN ip TEXT NOT NULL DEFAULT ''");
     this.db
       .prepare("INSERT OR IGNORE INTO settings VALUES (?, ?)")
       .run("salt", randomBytes(32).toString("hex"));
@@ -30,7 +43,7 @@ export class MonitorStore {
       .prepare("SELECT value FROM settings WHERE name=?")
       .get("salt").value;
     this.eventInsert = this.db.prepare(
-      "INSERT OR IGNORE INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO events (id,site,type,session,path,label,referrer,at,ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     this.probeInsert = this.db.prepare(
       "INSERT INTO probes VALUES (?, ?, ?, ?, ?, ?)",
@@ -50,6 +63,7 @@ export class MonitorStore {
         event.label || "",
         event.referrer || "",
         now,
+        normalizeIp(event.ip),
       ).changes > 0
     );
   }
@@ -102,12 +116,127 @@ export class MonitorStore {
       .get().first;
     return {
       ...counts,
+      ips: this.visitorCount(now, site),
+      unknownIpViews: this.db
+        .prepare(
+          `SELECT COUNT(*) AS total FROM events WHERE at>=? AND at<=?${scope} AND type='pageview' AND ip=''`,
+        )
+        .get(...args).total,
       pages,
       clickTargets,
       sites,
       trend,
       collectedSince,
       dayStart: start,
+    };
+  }
+  setting(key) {
+    return this.db.prepare("SELECT value FROM settings WHERE name=?").get(key)
+      ?.value;
+  }
+  accessBatch(rows, checkpoint, offset) {
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO requests (id,site,method,path,ip,code,latency,at) VALUES (?,?,?,?,?,?,?,?)",
+    );
+    let count = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows)
+        count += insert.run(
+          row.id,
+          row.site,
+          row.method,
+          row.path,
+          row.ip,
+          row.code,
+          row.latency,
+          row.at,
+        ).changes;
+      if (checkpoint)
+        this.db
+          .prepare("INSERT OR REPLACE INTO settings VALUES (?,?)")
+          .run(checkpoint, String(offset));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return count;
+  }
+  visitorSql(site) {
+    const scope = site ? " AND site=?" : "";
+    return `SELECT ip,site,at,1 AS pv,0 AS requests,0 AS errors FROM events WHERE at>=? AND at<=?${scope} AND type='pageview' AND ip<>''
+      UNION ALL SELECT ip,site,at,0 AS pv,1 AS requests,code>=500 AS errors FROM requests WHERE at>=? AND at<=?${scope}`;
+  }
+  visitorArgs(now, site) {
+    const args = [chinaDayStart(now), now, ...(site ? [site] : [])];
+    return [...args, ...args];
+  }
+  visitorCount(now, site) {
+    return this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT ip) AS total FROM (${this.visitorSql(site)})`,
+      )
+      .get(...this.visitorArgs(now, site)).total;
+  }
+  visitors(now = Date.now(), site = "", page = 1, query = "") {
+    const args = this.visitorArgs(now, site),
+      source = this.visitorSql(site);
+    const filter = " WHERE instr(ip,?)>0",
+      size = 25;
+    const total = this.db
+      .prepare(`SELECT COUNT(DISTINCT ip) AS total FROM (${source})${filter}`)
+      .get(...args, query).total;
+    const pages = Math.max(1, Math.ceil(total / size));
+    page = Math.max(1, Math.min(page, pages));
+    const rows = this.db
+      .prepare(
+        `SELECT ip,GROUP_CONCAT(DISTINCT site) AS sites,SUM(pv) AS pv,SUM(requests) AS requests,
+      SUM(errors) AS errors,MIN(at) AS firstAt,MAX(at) AS lastAt FROM (${source})${filter}
+      GROUP BY ip ORDER BY lastAt DESC,ip LIMIT ? OFFSET ?`,
+      )
+      .all(...args, query, size, (page - 1) * size);
+    return { rows, total, page, pages, size };
+  }
+  requests(now = Date.now(), site = "") {
+    const start = chinaDayStart(now),
+      scope = site ? " AND site=?" : "";
+    const args = [start, now, ...(site ? [site] : [])];
+    const counts = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total,COUNT(DISTINCT ip) AS ips,
+      COALESCE(SUM(code>=500),0) AS serverErrors,COALESCE(SUM(code>=400 AND code<500),0) AS clientErrors,
+      ROUND(AVG(latency)) AS latency FROM requests WHERE at>=? AND at<=?${scope}`,
+      )
+      .get(...args);
+    const rows = this.db
+      .prepare(
+        `WITH recent AS (
+      SELECT *,ROW_NUMBER() OVER (PARTITION BY site,method,path ORDER BY at DESC,rowid DESC) AS rn
+      FROM requests WHERE at>=? AND at<=?${scope})
+      SELECT site,method,path,SUM(at>=?) AS requests,COUNT(DISTINCT CASE WHEN at>=? THEN ip END) AS ips,
+      SUM(at>=? AND code>=500) AS serverErrors,SUM(at>=? AND code>=400 AND code<500) AS clientErrors,
+      ROUND(AVG(CASE WHEN at>=? THEN latency END)) AS latency,
+      SUM(at>=? AND code>=500) AS recentErrors,MAX(at) AS lastAt,MAX(CASE WHEN rn=1 THEN code END) AS lastCode
+      FROM recent GROUP BY site,method,path ORDER BY requests DESC,path,method`,
+      )
+      .all(
+        now - 30 * 86400000,
+        now,
+        ...(site ? [site] : []),
+        start,
+        start,
+        start,
+        start,
+        start,
+        now - 5 * 60000,
+      );
+    return {
+      ...counts,
+      endpoints: rows,
+      collectedSince: this.db
+        .prepare("SELECT MIN(at) AS first FROM requests")
+        .get().first,
     };
   }
   probe(result) {
@@ -153,6 +282,7 @@ export class MonitorStore {
   }
   prune(now = Date.now()) {
     this.db.prepare("DELETE FROM events WHERE at<?").run(now - 30 * 86400000);
+    this.db.prepare("DELETE FROM requests WHERE at<?").run(now - 30 * 86400000);
     this.db
       .prepare("DELETE FROM probes WHERE checkedAt<?")
       .run(now - 30 * 86400000);

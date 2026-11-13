@@ -13,7 +13,7 @@ service_user="${4:-ubuntu}"
 [[ "$service_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
 id "$service_user" >/dev/null
 node -e 'const [major,minor]=process.versions.node.split(".").map(Number); if(major<22||(major===22&&minor<13)) process.exit(1)'
-for file in server/index.mjs server/app.mjs server/admin-account.mjs server/store.mjs server/health.mjs public/tracker.js dist/index.html monitor.config.production.json deploy/niko-monitor.service deploy/nginx-monitor.conf; do
+for file in server/index.mjs server/app.mjs server/admin-account.mjs server/store.mjs server/health.mjs server/endpoints.mjs server/access-log.mjs server/nginx-telemetry.mjs public/tracker.js dist/index.html monitor.config.production.json deploy/niko-monitor.service deploy/nginx-monitor.conf; do
   test -f "$source_dir/$file"
 done
 test -f "$site"
@@ -34,6 +34,26 @@ chmodSync(file, 0o600);
 NODE
 
 install -d -m 0755 "$target" /etc/nginx/snippets
+getent group niko-monitor >/dev/null || groupadd --system niko-monitor
+install -d -o www-data -g niko-monitor -m 0750 /var/log/niko-monitor
+touch /var/log/niko-monitor/access.jsonl
+chown www-data:niko-monitor /var/log/niko-monitor/access.jsonl
+chmod 0640 /var/log/niko-monitor/access.jsonl
+cat > /etc/logrotate.d/niko-monitor <<'ROTATE'
+/var/log/niko-monitor/access.jsonl {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 www-data niko-monitor
+    sharedscripts
+    postrotate
+        invoke-rc.d nginx rotate >/dev/null 2>&1
+    endscript
+}
+ROTATE
 # Keep earlier hashed assets so already-open dashboards can finish loading.
 for directory in dist public server; do
   install -d -m 0755 "$target/$directory"
@@ -66,6 +86,15 @@ cp -p -- "$site" "$backup"
 snippet=/etc/nginx/snippets/niko-monitor.conf
 snippet_backup="${backup}.snippet"
 if [[ -f "$snippet" ]]; then cp -p -- "$snippet" "$snippet_backup"; fi
+telemetry=/etc/nginx/conf.d/niko-monitor-telemetry.conf
+telemetry_backup="${backup}.telemetry"
+if [[ -f "$telemetry" ]]; then cp -p -- "$telemetry" "$telemetry_backup"; fi
+node --input-type=module <<'NODE'
+import { writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const { nginxTelemetry } = await import(pathToFileURL(process.env.NIKO_MONITOR_TARGET + '/server/nginx-telemetry.mjs'));
+writeFileSync('/etc/nginx/conf.d/niko-monitor-telemetry.conf', nginxTelemetry(process.env.NIKO_MONITOR_ORIGIN), { mode: 0o644 });
+NODE
 install -m 0644 "$source_dir/deploy/nginx-monitor.conf" "$snippet"
 node --input-type=module <<'NODE'
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -82,6 +111,7 @@ NODE
 if ! nginx -t || ! systemctl reload nginx; then
   cp -p -- "$backup" "$site"
   if [[ -f "$snippet_backup" ]]; then cp -p -- "$snippet_backup" "$snippet"; else rm -f -- "$snippet"; fi
+  if [[ -f "$telemetry_backup" ]]; then cp -p -- "$telemetry_backup" "$telemetry"; else rm -f -- "$telemetry"; fi
   nginx -t && systemctl reload nginx
   echo 'Monitor proxy failed; previous Nginx configuration restored.' >&2
   exit 1

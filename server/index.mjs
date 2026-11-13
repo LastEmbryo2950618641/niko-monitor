@@ -71,6 +71,7 @@ const monitor = createMonitor({
   ),
   publicOrigin,
   intervalMs,
+  accessLog: process.env.MONITOR_ACCESS_LOG || "",
   development,
   frontend: vite?.middlewares,
 });
