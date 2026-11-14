@@ -84,6 +84,16 @@ sudo bash deploy/install.sh /srv/niko-archive/niko-monitor https://111.229.32.85
 
 安装脚本保留监控数据库与旧版静态资源，只重启监控服务。它检查健康状态后插入独立 Nginx include，验证配置再 reload；代理验证失败时恢复旧配置。重复执行不会更改固定管理员，也不会重启文库主备、扫描、下载或聊天服务。现有站点配置必须包含 `/srv/niko-archive/niko-main` 的 root 指令，否则脚本拒绝猜测插入位置。
 
+监控登录入口（`/niko-monitor`、`/niko-monitor/`、`/niko-monitor/index.html`）的 HTTP 访问会跳转至同主机的 HTTPS 地址；公开访问主机必须与 `MONITOR_PUBLIC_ORIGIN` 一致。后端保留严格来源校验，HTTP 与 HTTPS 属于不同来源。若旧 HTTP 页面提示“不允许跨站操作”，刷新页面或直接打开 HTTPS 入口。采集脚本及 `/api/collect` 继续支持已配置的 HTTP 站点，避免跳转中断统计。
+
+部署后可执行代理回归检查（不需要账号，不发送采集数据，不触发扫描）：
+
+```sh
+MONITOR_PROXY_ORIGIN=https://111.229.32.85 node --test test/proxy.test.mjs
+```
+
+仅当部署使用自签名证书时额外设置 `MONITOR_PROXY_INSECURE=1`；此开关只作用于该检查脚本。
+
 手动安装步骤：
 
 1. 安全创建 `/etc/niko-monitor.env`，配置 `MONITOR_PUBLIC_ORIGIN=https://111.229.32.85`，文件仅允许 root 读取，不提交 Git；在 HTTPS 页面使用固定的管理员账号和密码登录。
